@@ -29,3 +29,4 @@ yarn-error.log*
 # Operating system files
 .DS_Store
 Thumbs.db
+.env

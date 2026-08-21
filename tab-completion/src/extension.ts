@@ -6,6 +6,7 @@ let outputChannel: vscode.OutputChannel | undefined;
 
 export function activate(context: vscode.ExtensionContext) {
   outputChannel = vscode.window.createOutputChannel("Predikt");
+  outputChannel.appendLine("Predikt extension activated.");
 
   inlineCompletionProvider = new InlineCompletionProvider(outputChannel);
   const disposable = vscode.languages.registerInlineCompletionItemProvider(

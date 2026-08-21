@@ -1,6 +1,6 @@
 {
-  "name": "tab-completion",
-  "displayName": "Tab Completion",
+  "name": "predikt",
+  "displayName": "Predikt -  Tab Completion",
   "description": "A vscode extension for tab completion",
   "version": "0.0.1",
   "engines": {
@@ -14,6 +14,36 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "configuration": {
+      "title": "Predikt",
+      "properties": {
+        "predikt.openrouterApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "OpenRouter API Key"
+        },
+        "predikt.groqApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Groq API Key"
+        },
+        "predikt.fireworksApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Fireworks API Key"
+        },
+        "predikt.model": {
+          "type": "string",
+          "default": "qwen/qwen3-32b",
+          "description": "AI model to use for completion"
+        },
+        "predikt.maxTokens": {
+          "type": "number",
+          "default": 512,
+          "description": "Max tokens to generate"
+        }
+      }
+    },
     "commands": [
       {
         "command": "tab-completion.helloWorld",
