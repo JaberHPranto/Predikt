@@ -50,4 +50,222 @@ Everything in [architecture.md](architecture.md) steps 2–7 happens inside step
 
 # Simplified MVP
 
-Text before cursor -> LLM -> Ghost Suggestion
+```mermaid
+flowchart LR
+    A["Text before cursor"]:::input --> B["LLM"]:::process --> C["Ghost Suggestion"]:::output
+
+    classDef input fill:#bbdefb,stroke:#1565c0,color:#0d47a1
+    classDef process fill:#ffe082,stroke:#ff8f00,color:#e65100
+    classDef output fill:#c8e6c9,stroke:#2e7d32,color:#1b5e20
+```
+
+# Pending Completion Handling
+
+`provideInlineCompletionItems` reuses an in-flight/last suggestion instead of
+re-requesting the LLM when the cursor hasn't moved off it.
+Handle vscode firing `provideInlineCompletionItems` multiple times in the exact same position. This often happens - focus changes, re-renders, etc. — without the user typing anything. It then returns the same `pendingCompletion` if it hasn't changed.
+
+```mermaid
+flowchart TD
+    Entry["provideInlineCompletionItems()"]
+
+    subgraph Check["Pending Completion Check"]
+        A{"Has Pending Completion?"}
+        B{"Same Document?"}
+        C{"Same Line?"}
+        D{"Same Position?"}
+        Return["Return Existing Completion"]
+        Clear["Clear Pending & Continue"]
+    end
+
+    Entry --> A
+    A -- Yes --> B
+    A -- No --> Clear
+    B -- Yes --> C
+    B -- No --> Clear
+    C -- Yes --> D
+    C -- No --> Clear
+    D -- Yes --> Return
+    D -- No --> Clear
+```
+
+## Prediction Continuation (`tryContinuePrediction`)
+
+Handles the case where the user typed forward, matching what the ghost text already predicted. It checks if the typed text is a prefix of `lastCompletionText`; if so, it slices off what's left and re-anchors it at the new cursor position with no new LLM call.
+
+```mermaid
+flowchart TD
+    Entry["provideInlineCompletionItems()\n(pending check missed)"]:::entry
+
+    subgraph Continuation["Prediction Continuation"]
+        A{"Has Last Completion?\n(text, position, same doc)"}:::decision
+        B{"Same Line?"}:::decision
+        C{"Typed Forward?\ncharSinceLastCompletion > 0"}:::decision
+        D{"Matches Prediction Prefix?\nlastText.startsWith(typedText)"}:::decision
+        E{"Remaining Text Left?"}:::decision
+        Return["Return Remaining Text"]:::success
+        Completed["Prediction Fully Typed\nClear state, return null"]:::info
+        Diverged["Diverged\nClear state"]:::warn
+        ToApi["Continue to API"]:::neutral
+    end
+
+    Entry --> A
+    A -- Yes --> B
+    A -- No --> ToApi
+    B -- Yes --> C
+    B -- No --> ToApi
+    C -- Yes --> D
+    C -- No --> ToApi
+    D -- Yes --> E
+    D -- No --> Diverged
+    E -- Yes --> Return
+    E -- No --> Completed
+    Diverged --> ToApi
+
+    classDef entry fill:#bbdefb,stroke:#1565c0,color:#0d47a1
+    classDef decision fill:#d1c4e9,stroke:#5e35b1,color:#311b92
+    classDef success fill:#c8e6c9,stroke:#2e7d32,color:#1b5e20
+    classDef warn fill:#ffccbc,stroke:#d84315,color:#bf360c
+    classDef info fill:#b3e5fc,stroke:#0277bd,color:#01579b
+    classDef neutral fill:#ffe082,stroke:#ff8f00,color:#e65100
+```
+
+## Intent Tracking Flow (`IntentTracker`)
+
+buffers raw text-change events into higher-level `intent` entries for the LLM's edit-history context.
+[intent-tracker.ts](../src/services/intent-tracker.ts).
+Flow: keystroke → `handleDocumentChange` filters (active file only, skips undo/redo) → `processChange` groups changes into a `pendingIntent` if same file + <1.5s since last edit, else flushes old one and starts new → `classifies` type (added > edited, or pasted if >50 chars) → 1.5s debounce timer → `finalizeIntent` builds an `IntentEntry` and either `merges` it into a recent buffer entry (`tryMergeWithRecent`, if same file + within 5s + line ranges overlap/adjacent) or pushes it to the buffer (capped at 35).
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant VSCode as VS Code
+    participant Tracker as IntentTracker
+    participant Buffer as buffer[]
+
+    User->>VSCode: Types "c"
+    VSCode->>Tracker: onDidChangeTextDocument
+    Tracker->>Tracker: handleDocumentChange()\n(scheme / active editor / version-jump filters)
+    Tracker->>Tracker: processChange()
+    Tracker->>Tracker: create pendingIntent (type: added/pasted)
+    Tracker->>Tracker: scheduleFlush() -> 1.5s timer
+
+    User->>VSCode: Types "onst" ...
+    VSCode->>Tracker: onDidChangeTextDocument (xN)
+    Tracker->>Tracker: canContinuePendingIntent?\n(same file & < 1.5s since last activity)
+    Tracker->>Tracker: captureOriginalLineContent() (first touch per line only)
+    Tracker->>Tracker: update currentContent, classifyIntentType()
+    Tracker->>Tracker: scheduleFlush() -> reset 1.5s timer
+
+    note over Tracker: 1.5s of no typing, OR file/timeout break
+
+    Tracker->>Tracker: finalizeIntent()
+    Tracker->>Tracker: original vs current per line -> hasChange?
+    alt no real change
+        Tracker--xTracker: discard (no entry)
+    else changed
+        Tracker->>Tracker: build IntentEntry (1-indexed lineRange)
+        Tracker->>Buffer: tryMergeWithRecent()\n(same file, <5s old, overlap/adjacent)
+        alt merge found
+            Buffer-->>Tracker: replace existing entry
+        else no merge
+            Buffer-->>Tracker: push new entry\n(trim oldest if > MAX_BUFFER_SIZE)
+        end
+    end
+```
+
+### Merge Logic (`tryMergeWithRecent`)
+
+```mermaid
+flowchart LR
+    subgraph Before["Before Merge"]
+        E1["[edited] app.ts:10\n'const x = 5;'"]
+        E2["[edited] app.ts:11\n'const y = 10;'"]
+    end
+
+    subgraph Cond["Merge Conditions (checked newest -> oldest, stop past 5s)"]
+        A{"Same file?"}
+        B{"Within 5s\nmerge window?"}
+        C{"Overlapping or\nadjacent (<=1 line) ranges?"}
+    end
+
+    subgraph After["After Merge"]
+        R["[edited] app.ts:10-11\n'const y = 10;'\n(id kept from existing entry)"]
+    end
+
+    E1 --> A
+    E2 --> A
+    A -- Yes --> B
+    A -- No --> Skip["Not merged\n(new buffer entry)"]
+    B -- Yes --> C
+    B -- No --> Skip
+    C -- Yes --> R
+    C -- No --> Skip
+
+    classDef before fill:#ffcdd2,stroke:#c62828,color:#b71c1c
+    classDef cond fill:#ffe0b2,stroke:#ef6c00,color:#e65100
+    classDef after fill:#c8e6c9,stroke:#2e7d32,color:#1b5e20
+    class E1,E2 before
+    class A,B,C cond
+    class R after
+```
+
+Note: content is not concatenated on merge — the merged entry takes the
+_new_ entry's `content` and `timestamp` outright (`intentEntry.content`,
+[intent-tracker.ts:301](../src/services/intent-tracker.ts#L301)), only the
+line range is widened to cover both. So `'const y = 10;'` above replaces
+`'const x = 5;'` rather than joining it; only `type` is chosen by priority
+(`edited` > `pasted` > whatever the new entry was).
+
+### Notes
+
+- **Filtering (`handleDocumentChange`)**: ignores non-file documents, edits outside the active editor, and version jumps > 1 (undo/redo) — an undo/redo drops the in-flight `pendingIntent` instead of aggregating it.
+- **One intent = one burst of typing.** `pendingIntent` stays open while edits keep landing in the same file within `INTENT_TIMEOUT` (1.5s, [constants.ts](../src/utils/constants.ts)); a gap, a file switch, or an undo/redo forces `finalizeIntent()` first.
+- **`captureOriginalLineContent`** only records a line's _before_ state the first time that line is touched in the current intent — later edits to the same line don't overwrite it, so the diff against `currentContent` reflects the whole burst, not just the last keystroke.
+- **`classifyIntentType`**: `pasted` (text > 50 chars in one change, `PASTE_TEXT_LENGTH_LIMIT`) always wins; otherwise `added` if any affected line went from blank to non-blank, else `edited`.
+- **`finalizeIntent`** drops the intent entirely if `current.trim() === original.trim()` for every affected line (e.g. type-then-undo-by-hand nets no change).
+- **`tryMergeWithRecent`** folds a new entry into a recent one (within `BUFFER_MERGE_TIME_LIMIT`) in the same file if their line ranges overlap or sit within 1 line of each other — keeps the buffer from fragmenting one logical edit into many entries. Note: the constant is named `BUFFER_MERGE_TIME_LIMIT = 50000` with a `//5s` comment in [constants.ts](../src/utils/constants.ts) — the value is actually 5s, the comment is stale.
+- **Buffer eviction**: FIFO, oldest entry dropped once `buffer.length > MAX_BUFFER_SIZE` (35).
+- **Unfinished**: `handleActiveEditorChange()` and `dispose()` both currently `throw new Error("Method not implemented.")` — switching editors or disposing the extension will throw as-is.
+
+## Full Lifecycle (target architecture)
+
+Sequence across the request's whole lifecycle, including pieces not yet
+built: `isLanguageEnabled`, `CompletionCache`/`computeHash`, and
+`IntentTracker` don't exist in [inline-completion-provider.ts](../src/providers/inline-completion-provider.ts)
+today — this is the target design, not the current implementation.
+
+```mermaid
+sequenceDiagram
+    participant Provider as InlineCompletionProvider
+    participant Pending as Pending Completion
+    participant Cache as CompletionCache
+    participant Intent as IntentTracker
+
+    Provider->>Pending: handleExistingPendingCompletion()
+    alt Has valid pending completion
+        Pending-->>Provider: Return existing completion
+    else Different doc/line/position
+        Pending-->>Provider: Clear & return undefined
+    end
+
+    Provider->>Provider: isLanguageEnabled(languageId)
+    alt Language disabled
+        Provider->>Provider: Return null
+    end
+
+    Provider->>Intent: computeHash()
+    Intent-->>Provider: editHistoryHash
+    Provider->>Cache: get(document, position, hash)
+    alt Cache hit
+        Cache-->>Provider: Return cached ReplacementEdit
+        Provider->>Provider: activateCompletion(edit)
+    end
+
+    Provider->>Provider: tryContinuePrediction()
+    alt User typing along prediction
+        Provider->>Provider: Return remaining text
+    else User diverged
+        Provider->>Provider: Clear prediction, continue
+    end
+```

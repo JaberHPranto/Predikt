@@ -118,8 +118,6 @@ export class LLMClient implements vscode.Disposable {
       signal,
     });
 
-    this.log("Response: " + JSON.stringify(response));
-
     if (!response.ok) {
       const errorText = await response.text();
       throw new Error(

@@ -14,7 +14,7 @@ export function activate(context: vscode.ExtensionContext) {
     inlineCompletionProvider,
   );
 
-  context.subscriptions.push(disposable);
+  context.subscriptions.push(disposable, outputChannel);
 }
 
 export function deactivate() {}
