@@ -1,5 +1,6 @@
 /*  Keep track user recent edit history, actions  */
 import * as vscode from "vscode";
+import * as crypto from "crypto";
 import { IntentEntry, IntentType, PendingIntent } from "../utils/types";
 import {
   BUFFER_MERGE_TIME_LIMIT,
@@ -19,6 +20,17 @@ export class IntentTracker implements vscode.Disposable {
   constructor() {
     this.registerListeners();
   }
+
+  computeHash(): string {
+    const content = this.buffer
+      .map(
+        (entry) =>
+          `${entry.filePath}:${entry.timestamp}:${entry.type}:${entry.content}`,
+      )
+      .join("|");
+    return crypto.createHash("md5").update(content).digest("hex").slice(0, 16);
+  }
+
   private registerListeners() {
     // Track document relayed changes -> user paste a text or user types something
     this.disposables.push(
@@ -309,10 +321,20 @@ export class IntentTracker implements vscode.Disposable {
     return null;
   }
 
-  private handleActiveEditorChange(event: vscode.TextEditor | undefined): void {
-    throw new Error("Method not implemented.");
+  private handleActiveEditorChange(
+    editor: vscode.TextEditor | undefined,
+  ): void {
+    if (!this.pendingIntent || !editor) {
+      return;
+    }
+
+    if (this.pendingIntent.filePath !== editor.document.uri.fsPath) {
+      this.finalizeIntent();
+    }
   }
   dispose() {
-    throw new Error("Method not implemented.");
+    this.finalizeIntent(); // last intent finalization
+    this.disposables.forEach((d) => d.dispose());
+    this.clearFlushTimeout();
   }
 }

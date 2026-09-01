@@ -18,6 +18,7 @@ sequenceDiagram
     Ext->>Editor: registerInlineCompletionItemProvider(selector, provider)
 
     rect rgb(255, 249, 196)
+
     note over User, Provider: Runtime Trigger
     end
     User->>Editor: Types character / moves cursor
@@ -269,3 +270,52 @@ sequenceDiagram
         Provider->>Provider: Clear prediction, continue
     end
 ```
+
+## Cache Eviction Strategy (target design — `evictLeastUsed`)
+
+Hybrid LRU + LFU eviction for `CompletionCache` (not yet implemented — same
+target-design status as the section above). TTL expiry gives the LRU half
+(time-based), `accessCount / ageSeconds` gives the LFU half (frequency-based,
+lower score = less useful = eviction candidate). One call evicts at most one
+entry: the first expired entry found, or, if none are expired, the lowest-scoring
+one across the whole scan.
+
+```mermaid
+flowchart TD
+    Start["evictLeastUsed()"]:::entry
+    Scan["Scan all entries"]:::process
+    TTL{"Entry TTL expired?"}:::decision
+    DeleteExpired["Delete expired entry\n(free cleanup)"]:::danger
+    Score["Score = accessCount / ageSeconds"]:::process
+    Compare{"Score < lowestScore?"}:::decision
+    Mark["Mark as eviction candidate"]:::process
+    Skip["Skip"]:::neutral
+    Continue["Continue scan"]:::process
+    DeleteLowest["Delete entry with lowest score"]:::danger
+    Return["Return"]:::success
+
+    Start --> Scan --> TTL
+    TTL -- Yes --> DeleteExpired --> Return
+    TTL -- No --> Score --> Compare
+    Compare -- Yes --> Mark --> Continue
+    Compare -- No --> Skip --> Continue
+    Continue -- "next entry" --> TTL
+    Continue -- "scan complete" --> DeleteLowest --> Return
+
+    classDef entry fill:#bbdefb,stroke:#1565c0,color:#0d47a1
+    classDef process fill:#ffe082,stroke:#ff8f00,color:#e65100
+    classDef decision fill:#d1c4e9,stroke:#5e35b1,color:#311b92
+    classDef danger fill:#ff8a80,stroke:#c62828,color:#b71c1c
+    classDef neutral fill:#eceff1,stroke:#455a64,color:#263238
+    classDef success fill:#c8e6c9,stroke:#2e7d32,color:#1b5e20
+```
+
+- **LRU half**: TTL expiry — an entry idle past its time-to-live is deleted
+  immediately on sight, no need to compare it against anything else.
+- **LFU half**: for non-expired entries, `score = accessCount / ageSeconds`
+  approximates "uses per second alive" — the lowest-scoring entry seen during
+  the scan is tracked as the eviction candidate and deleted only after the
+  full scan confirms no entry was expired.
+- Expired-entry cleanup and lowest-score eviction are mutually exclusive per
+  call: finding an expired entry short-circuits the scan and returns
+  immediately, so the LFU comparison never runs against entries scanned after it.

@@ -41,6 +41,20 @@
           "type": "number",
           "default": 512,
           "description": "Max tokens to generate"
+        },
+        "predikt.completionCacheMaxEntries": {
+          "type": "number",
+          "minimum": 10,
+          "default": 100,
+          "maximum": 1000,
+          "description": "Max entries to store in completion cache"
+        },
+        "predikt.completionCacheTtlMs": {
+          "type": "number",
+          "default": 30000,
+          "minimum": 5000,
+          "maximum": 120000,
+          "description": "Time to live for cache entries in milliseconds"
         }
       }
     },

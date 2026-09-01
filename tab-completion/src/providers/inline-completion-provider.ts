@@ -5,12 +5,16 @@ import {
   PendingCompletion,
   ReplacementEdit,
 } from "../utils/types";
+import { IntentTracker } from "../services/intent-tracker";
+import { CompletionCache } from "../cache/completion-cache";
 
 export class InlineCompletionProvider
   implements vscode.InlineCompletionItemProvider
 {
   private readonly outputChannel: vscode.OutputChannel;
   private readonly llmClient: LLMClient;
+  private readonly intentTracker: IntentTracker;
+  private readonly completionCache: CompletionCache;
 
   // what llm last gave to the user
   private pendingCompletion: PendingCompletion | null = null;
@@ -23,6 +27,8 @@ export class InlineCompletionProvider
   constructor(outputChannel: vscode.OutputChannel) {
     this.outputChannel = outputChannel;
     this.llmClient = new LLMClient(outputChannel);
+    this.intentTracker = new IntentTracker();
+    this.completionCache = new CompletionCache();
   }
 
   async provideInlineCompletionItems(
@@ -46,7 +52,17 @@ export class InlineCompletionProvider
         return pendingCompletionResult;
       }
 
-      // Stage 2: Cache Completion
+      // Stage 2: Cache Completion/Lookup
+      const editHistoryHash = this.intentTracker.computeHash();
+      const cacheCompletionResult = this.tryCacheCompletion(
+        document,
+        position,
+        editHistoryHash,
+      );
+
+      if (cacheCompletionResult !== undefined) {
+        return cacheCompletionResult;
+      }
 
       // Stage 3: Continue prediction
       const continuePredictionResult = this.tryContinuePrediction(
@@ -58,14 +74,14 @@ export class InlineCompletionProvider
         return continuePredictionResult;
       }
 
-      const prefix = document.getText(
-        new vscode.Range(new vscode.Position(0, 0), position),
-      );
-
       if (token.isCancellationRequested) {
         this.log("Request cancelled");
         return null;
       }
+
+      const prefix = document.getText(
+        new vscode.Range(new vscode.Position(0, 0), position),
+      );
 
       const messages: ChatMessage[] = [
         {
@@ -112,6 +128,13 @@ export class InlineCompletionProvider
         insertText: completion,
       };
 
+      this.completionCache.set(
+        document,
+        position,
+        editHistoryHash,
+        replacementEdit,
+      );
+
       this.activateCompletion(replacementEdit, document);
 
       return this.createInlineCompletionList(completion);
@@ -138,6 +161,29 @@ export class InlineCompletionProvider
         insertText: edit.insertText,
       },
     };
+  }
+
+  private tryCacheCompletion(
+    document: vscode.TextDocument,
+    position: vscode.Position,
+    editHistoryHash: string,
+  ): vscode.InlineCompletionList | undefined {
+    const cachedEdit = this.completionCache.get(
+      document,
+      position,
+      editHistoryHash,
+    );
+
+    if (!cachedEdit) {
+      return undefined;
+    }
+
+    this.log(
+      `Cache hit for document ${document.uri.toString()} at position ${position.line}:${position.character}`,
+    );
+
+    this.activateCompletion(cachedEdit, document);
+    return this.createInlineCompletionList(cachedEdit.insertText);
   }
 
   private tryContinuePrediction(

@@ -11,6 +11,8 @@ export interface TabCompletionConfig {
   maxTokens: number;
 
   // Cache Settings
+  completionCacheMaxEntries: number;
+  completionCacheTtlMs: number;
 }
 
 const DEFAULT_CONFIG: TabCompletionConfig = {
@@ -20,6 +22,9 @@ const DEFAULT_CONFIG: TabCompletionConfig = {
 
   model: "qwen/qwen3-32b",
   maxTokens: 512,
+
+  completionCacheMaxEntries: 100,
+  completionCacheTtlMs: 30 * 1000, // 30 seconds
 };
 
 export class ConfigurationService implements vscode.Disposable {
@@ -51,6 +56,14 @@ export class ConfigurationService implements vscode.Disposable {
       fireworksApiKey: config.get<string>("fireworksApiKey", ""),
       model: config.get<string>("model", DEFAULT_CONFIG.model),
       maxTokens: config.get<number>("maxTokens", DEFAULT_CONFIG.maxTokens),
+      completionCacheMaxEntries: config.get<number>(
+        "completionCacheMaxEntries",
+        DEFAULT_CONFIG.completionCacheMaxEntries,
+      ),
+      completionCacheTtlMs: config.get<number>(
+        "completionCacheTtlMs",
+        DEFAULT_CONFIG.completionCacheTtlMs,
+      ),
     };
   }
 
@@ -74,6 +87,15 @@ export class ConfigurationService implements vscode.Disposable {
     }
   }
 
+  onConfigChange(callback: (config: TabCompletionConfig) => void) {
+    this.changeListeners.add(callback);
+    return {
+      dispose: () => {
+        this.changeListeners.delete(callback);
+      },
+    };
+  }
+
   get model(): string {
     return this.cachedConfig.model;
   }
@@ -89,14 +111,11 @@ export class ConfigurationService implements vscode.Disposable {
   get maxTokens(): number {
     return this.cachedConfig.maxTokens;
   }
-
-  onConfigChange(callback: (config: TabCompletionConfig) => void) {
-    this.changeListeners.add(callback);
-    return {
-      dispose: () => {
-        this.changeListeners.delete(callback);
-      },
-    };
+  get completionCacheMaxEntries(): number {
+    return this.cachedConfig.completionCacheMaxEntries;
+  }
+  get completionCacheTtlMs(): number {
+    return this.cachedConfig.completionCacheTtlMs;
   }
 
   dispose() {
