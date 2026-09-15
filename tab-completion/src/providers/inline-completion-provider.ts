@@ -7,6 +7,7 @@ import {
 } from "../utils/types";
 import { IntentTracker } from "../services/intent-tracker";
 import { CompletionCache } from "../cache/completion-cache";
+import { ContextGatherer } from "../services/context/context-gatherer";
 
 export class InlineCompletionProvider
   implements vscode.InlineCompletionItemProvider
@@ -15,6 +16,7 @@ export class InlineCompletionProvider
   private readonly llmClient: LLMClient;
   private readonly intentTracker: IntentTracker;
   private readonly completionCache: CompletionCache;
+  private readonly contextGatherer: ContextGatherer;
 
   // what llm last gave to the user
   private pendingCompletion: PendingCompletion | null = null;
@@ -29,6 +31,7 @@ export class InlineCompletionProvider
     this.llmClient = new LLMClient(outputChannel);
     this.intentTracker = new IntentTracker();
     this.completionCache = new CompletionCache();
+    this.contextGatherer = new ContextGatherer(this.intentTracker);
   }
 
   async provideInlineCompletionItems(
@@ -79,9 +82,12 @@ export class InlineCompletionProvider
         return null;
       }
 
-      const prefix = document.getText(
-        new vscode.Range(new vscode.Position(0, 0), position),
+      const prefix = await this.contextGatherer.gatherContext(
+        document,
+        position,
       );
+
+      this.log(`Prefix: ${prefix}`);
 
       const messages: ChatMessage[] = [
         {

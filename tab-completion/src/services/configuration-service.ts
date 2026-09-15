@@ -13,6 +13,7 @@ export interface TabCompletionConfig {
   // Cache Settings
   completionCacheMaxEntries: number;
   completionCacheTtlMs: number;
+  lspCacheMaxEntries: number;
 }
 
 const DEFAULT_CONFIG: TabCompletionConfig = {
@@ -25,6 +26,7 @@ const DEFAULT_CONFIG: TabCompletionConfig = {
 
   completionCacheMaxEntries: 100,
   completionCacheTtlMs: 30 * 1000, // 30 seconds
+  lspCacheMaxEntries: 250,
 };
 
 export class ConfigurationService implements vscode.Disposable {
@@ -63,6 +65,10 @@ export class ConfigurationService implements vscode.Disposable {
       completionCacheTtlMs: config.get<number>(
         "completionCacheTtlMs",
         DEFAULT_CONFIG.completionCacheTtlMs,
+      ),
+      lspCacheMaxEntries: config.get<number>(
+        "lspCacheMaxEntries",
+        DEFAULT_CONFIG.lspCacheMaxEntries,
       ),
     };
   }
@@ -116,6 +122,10 @@ export class ConfigurationService implements vscode.Disposable {
   }
   get completionCacheTtlMs(): number {
     return this.cachedConfig.completionCacheTtlMs;
+  }
+
+  get lspCacheMaxEntries(): number {
+    return this.cachedConfig.lspCacheMaxEntries;
   }
 
   dispose() {

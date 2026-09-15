@@ -271,6 +271,34 @@ sequenceDiagram
     end
 ```
 
+## Context Gathering (target design)
+
+Same target-design status as the sections above — `LSPService`,
+`CrossFileSymbolService`, and `ASTService` don't exist yet in
+[inline-completion-provider.ts](../src/providers/inline-completion-provider.ts).
+See [architecture.md](architecture.md) step 3 for the prose walkthrough.
+
+```mermaid
+flowchart TD
+    Start(["Start gathering context"]) --> LoadParser
+    LoadParser["Load the code parser (tree-sitter)<br/>for this file's language if not loaded yet"] --> Replacement
+
+    Replacement["1. Replacement Region<br/>Figure out what text after the cursor<br/>might need to be replaced"] --> Prefix
+    Prefix["2. Prefix (code before cursor)<br/>Collect the most relevant code<br/>that comes before where you're typing"] --> Suffix
+    Suffix["3. Suffix (code after cursor)<br/>Collect a small window of code<br/>that comes after the replacement region"] --> Parallel
+
+    Parallel{"These two run<br/>at the same time<br/>(in parallel)"}
+    Parallel --> TypeDefs
+    Parallel --> CrossFile
+
+    TypeDefs["4. Type Definitions<br/>Ask the language server for<br/>type info about what's at the cursor"] --> WaitBoth
+    CrossFile["5. Cross-File Symbols<br/>Find relevant functions/classes<br/>from other files in the project"] --> WaitBoth
+
+    WaitBoth["Wait for both to finish"] --> EditHistory
+    EditHistory["6. Edit History<br/>Summarize what you've been<br/>editing recently (your intent)"] --> Finalize
+    Finalize["7. Package everything up into one context bundle and return it"]
+```
+
 ## Cache Eviction Strategy (target design — `evictLeastUsed`)
 
 Hybrid LRU + LFU eviction for `CompletionCache` (not yet implemented — same
@@ -319,3 +347,73 @@ flowchart TD
 - Expired-entry cleanup and lowest-score eviction are mutually exclusive per
   call: finding an expired entry short-circuits the scan and returns
   immediately, so the LFU comparison never runs against entries scanned after it.
+
+## Prefix Stage (target design)
+
+How the prefix (code before the cursor) is built for the LLM prompt. Small
+files/functions get sent verbatim; large ones get windowed via the language
+server, then enriched with only the imports/dependencies actually used.
+
+```mermaid
+flowchart TD
+    Start["How much code is before the cursor?"]:::entry
+    Within150{"Is the cursor within\nthe first 150 lines\nof the file?"}:::decision
+    Verbatim["Strategy: Verbatim\nInclude everything from line 1\nto the cursor, unchanged.\nThe file is small enough to send it all."]:::strategy
+
+    AskLSP["Ask the language server:\nwhat function/method\nam I currently inside?"]:::process
+    InFunc{"Is the cursor inside\na function or method?"}:::decision
+    Simplified["Strategy: Simplified\nLast 150 lines before the cursor\n+ only the imports actually used\nin those lines"]:::strategy
+
+    FuncLong{"Is the function itself\nlonger than 150 lines\n(from its start to the cursor)?"}:::decision
+    SmallFunc["Strategy: Small Function\nInclude the entire function body\nfrom its first line to the cursor"]:::strategy
+    LargeFunc["Strategy: Large Function\nTwo windows:\n1. First 30 lines of the function\n(setup, params, declarations)\n2. Last 100 lines before the cursor\n(recent context), with a marker\nshowing lines were skipped"]:::strategy
+
+    Enrich["Enrich the prefix with:"]:::process
+    UsedImports["Only the import/require statements\nactually referenced in the collected code"]:::process
+    ClassHeader["If inside a class: include the\nclass declaration line\n(class Name extends Base {})"]:::process
+    SameFileDeps["Include same-file dependencies"]:::process
+
+    Assemble["Assemble final prefix:\n1. Used imports (top)\n2. Same-file dependencies\n3. Class header (if applicable)\n4. Code lines (with truncation\nmarker if needed)"]:::process
+    Return(["Return the prefix string"]):::exit
+
+    Start --> Within150
+    Within150 -- Yes --> Verbatim
+    Within150 -- "No (cursor is deep\nin a large file)" --> AskLSP
+    AskLSP --> InFunc
+    InFunc -- No --> Simplified
+    InFunc -- Yes --> FuncLong
+    FuncLong -- No --> SmallFunc
+    FuncLong -- Yes --> LargeFunc
+    SmallFunc --> Enrich
+    LargeFunc --> Enrich
+    Enrich --> UsedImports --> ClassHeader --> SameFileDeps --> Assemble
+    Simplified --> Assemble
+    Verbatim --> Return
+    Assemble --> Return
+
+    classDef entry fill:#bbdefb,stroke:#1565c0,color:#0d47a1
+    classDef decision fill:#d1c4e9,stroke:#5e35b1,color:#311b92
+    classDef process fill:#ffe092,stroke:#ff8f00,color:#e65100
+    classDef strategy fill:#c8e6c9,stroke:#2e7d32,color:#1b5e20
+    classDef exit fill:#b3e5fc,stroke:#0277bd,color:#01579b
+```
+
+### Notes
+
+- **150-line threshold** decides between two branches: near-top-of-file
+  (verbatim, no LSP call needed) vs. deep-in-file (ask the language server to
+  locate the enclosing function, then window around it).
+- **Simplified strategy** is the fallback when the cursor isn't inside any
+  function (e.g. top-level/module code deep in a large file) — just a sliding
+  150-line window plus used imports, no LSP-derived function boundaries.
+- **Small vs. Large function** split is also a 150-line threshold, but
+  measured from the function's own start to the cursor, not the file's start.
+  Large functions lose their middle (only first 30 + last 100 lines survive),
+  with a marker noting the gap so the LLM knows lines were skipped.
+- **Enrichment is shared** by both the Small Function and Large Function
+  branches (imports → class header → same-file deps), but the Simplified and
+  Verbatim strategies skip straight to assembly — Simplified already computed
+  its own "used imports," and Verbatim needs no enrichment since it's the
+  whole file-to-cursor already.
+- **Import filtering** is not "all imports" — only ones actually referenced
+  in the collected code lines are included, to keep the prefix compact.

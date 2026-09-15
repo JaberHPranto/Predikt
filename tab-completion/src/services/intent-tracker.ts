@@ -8,6 +8,7 @@ import {
   MAX_BUFFER_SIZE,
   PASTE_TEXT_LENGTH_LIMIT,
 } from "../utils/constants";
+import { getRelativeFilePath } from "../utils/helper";
 
 export class IntentTracker implements vscode.Disposable {
   private disposables: vscode.Disposable[] = [];
@@ -332,8 +333,36 @@ export class IntentTracker implements vscode.Disposable {
       this.finalizeIntent();
     }
   }
+
+  serialize(): string {
+    this.finalizeIntent();
+
+    if (this.buffer.length === 0) {
+      return "";
+    }
+
+    const entries = this.buffer.slice(-35);
+    const lines: string[] = [];
+
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      const relativePath = getRelativeFilePath(entry.filePath);
+
+      const lineRange =
+        entry.lineRange.start === entry.lineRange.end
+          ? `:${entry.lineRange.start}`
+          : `:${entry.lineRange.start}-${entry.lineRange.end}`;
+
+      lines.push(
+        `${i + 1}. [${entry.type}] ${relativePath}: ${lineRange} -> "${entry.content.substring(0, 250)}"`,
+      );
+    }
+
+    return lines.join("\n");
+  }
+
   dispose() {
-    this.finalizeIntent(); // last intent finalization
+    this.finalizeIntent(); // flush out any pending intent before disposing
     this.disposables.forEach((d) => d.dispose());
     this.clearFlushTimeout();
   }

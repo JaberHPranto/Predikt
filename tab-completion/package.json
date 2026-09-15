@@ -55,6 +55,13 @@
           "minimum": 5000,
           "maximum": 120000,
           "description": "Time to live for cache entries in milliseconds"
+        },
+        "predikt.lspCacheMaxEntries": {
+          "type": "number",
+          "minimum": 10,
+          "default": 250,
+          "maximum": 1000,
+          "description": "Max entries to store in completion cache"
         }
       }
     },
