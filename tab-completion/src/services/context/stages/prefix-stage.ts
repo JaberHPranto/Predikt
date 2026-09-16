@@ -15,7 +15,7 @@ import {
   findImportLineSpans,
   parseImportBindings,
 } from "../../../utils/import-analysis";
-import { LocalDependencyResolver } from "../local-dependecy-resolver";
+import { LocalDependencyResolver } from "../local-dependency-resolver";
 
 export class PrefixStage {
   private readonly localDependencyResolver: LocalDependencyResolver;
