@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { InlineCompletionProvider } from "./providers/inline-completion-provider";
-import { ASTService } from "./services/ast-service";
+import { ASTService } from "./services/ast/ast-service";
 
 let inlineCompletionProvider: InlineCompletionProvider | undefined;
 let outputChannel: vscode.OutputChannel | undefined;
@@ -28,7 +28,10 @@ export function activate(context: vscode.ExtensionContext) {
     }
   });
 
-  inlineCompletionProvider = new InlineCompletionProvider(outputChannel);
+  inlineCompletionProvider = new InlineCompletionProvider(
+    astService,
+    outputChannel,
+  );
   const disposable = vscode.languages.registerInlineCompletionItemProvider(
     // match all files irrespective of language
     { pattern: "**" },

@@ -63,3 +63,8 @@ export interface EnclosingScope {
   enclosingClass: vscode.DocumentSymbol | null;
   symbolByNames: Map<string, vscode.DocumentSymbol[]>;
 }
+
+export interface ReplacementRegion {
+  text: string;
+  range: vscode.Range;
+}

@@ -8,6 +8,7 @@ import {
 import { IntentTracker } from "../services/intent-tracker";
 import { CompletionCache } from "../cache/completion-cache";
 import { ContextGatherer } from "../services/context/context-gatherer";
+import { ASTService } from "../services/ast/ast-service";
 
 export class InlineCompletionProvider
   implements vscode.InlineCompletionItemProvider
@@ -26,12 +27,12 @@ export class InlineCompletionProvider
   private lastCompletionPosition: vscode.Position | null = null;
   private lastCompletionUri = "";
 
-  constructor(outputChannel: vscode.OutputChannel) {
+  constructor(astService: ASTService, outputChannel: vscode.OutputChannel) {
     this.outputChannel = outputChannel;
     this.llmClient = new LLMClient(outputChannel);
     this.intentTracker = new IntentTracker();
     this.completionCache = new CompletionCache();
-    this.contextGatherer = new ContextGatherer(this.intentTracker);
+    this.contextGatherer = new ContextGatherer(astService, this.intentTracker);
   }
 
   async provideInlineCompletionItems(
