@@ -1,10 +1,10 @@
 import {
   REGION_CHARACTER_LIMIT,
   REGION_LINE_LIMIT,
-} from "../../utils/constants";
-import { ReplacementRegion } from "../../utils/types";
-import { findStatementEnd } from "../ast/ast-analysis";
-import { ASTService } from "../ast/ast-service";
+} from "../../../utils/constants";
+import { ReplacementRegion } from "../../../utils/types";
+import { findStatementEnd } from "../../ast/ast-analysis";
+import { ASTService } from "../../ast/ast-service";
 import * as vscode from "vscode";
 
 export class ReplacementRegionStage {
