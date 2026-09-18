@@ -417,3 +417,123 @@ flowchart TD
   whole file-to-cursor already.
 - **Import filtering** is not "all imports" — only ones actually referenced
   in the collected code lines are included, to keep the prefix compact.
+
+## Replacement Region Stage
+
+Unlike the sections above, this one is implemented today:
+[replacement-region-stage.ts](../src/services/context/replacement-region-stage.ts)
++ [ast-analysis.ts](../src/services/ast/ast-analysis.ts). It decides how much
+_already-typed_ code after the cursor a completion is allowed to overwrite —
+not just insert in front of — so accepting a suggestion can't leave a
+duplicated or dangling bracket behind from code that was already there.
+`ContextGatherer` calls it ([context-gatherer.ts:26](../src/services/context/context-gatherer.ts#L26))
+but doesn't use the result yet — wired ahead of the feature landing.
+
+```mermaid
+flowchart TD
+    Start["compute(document, position)"]:::entry
+    Default["Default region:\ntext = rest of current line\nrange = cursor -> end of line"]:::process
+
+    TailCheck{"shouldTryExtension()?\n(cheap, no parsing)"}:::decision
+    Case1["unbalanced ( [ { vs ) ] }"]:::note
+    Case2["ends with an operator\n( , + - * / && || . = ? : ...)"]:::note
+    Case3["short (<20 chars) AND\nno ; { } : at the end"]:::note
+
+    LenCheck{"tail shorter than\nREGION_CHARACTER_LIMIT (200)?"}:::decision
+    Window["Grab up to REGION_LINE_LIMIT (3)\nlines starting at the cursor's line"]:::process
+    Parse["Parse just that window\n(tree-sitter, not the whole file)"]:::process
+
+    Smallest["findSmallestNode:\ndescend to the innermost node\ncontaining the cursor"]:::process
+    SelfCheck{"Is that node itself\na statement boundary?\n(if/for/while/return/declaration/...)"}:::decision
+    Climb["Climb .parent until a\nstatement-boundary type is hit"]:::process
+
+    NullCheck{"Result found,\nand extended text\nwithin maxChars?"}:::decision
+    Extend["Build absolute range/text\nfrom cursor to statement end\n(may span the extra lines)"]:::success
+
+    Return(["Return ReplacementRegion\n{ text, range }"]):::exit
+
+    Start --> TailCheck
+    TailCheck -. one of .-> Case1
+    TailCheck -. one of .-> Case2
+    TailCheck -. one of .-> Case3
+    TailCheck -- No --> Default
+    TailCheck -- Yes --> LenCheck
+    LenCheck -- No --> Default
+    LenCheck -- Yes --> Window --> Parse --> Smallest --> SelfCheck
+    SelfCheck -- Yes --> NullCheck
+    SelfCheck -- No --> Climb --> NullCheck
+    NullCheck -- No --> Default
+    NullCheck -- Yes --> Extend --> Return
+    Default --> Return
+
+    classDef entry fill:#bbdefb,stroke:#1565c0,color:#0d47a1
+    classDef decision fill:#d1c4e9,stroke:#5e35b1,color:#311b92
+    classDef process fill:#ffe082,stroke:#ff8f00,color:#e65100
+    classDef note fill:#eceff1,stroke:#455a64,color:#263238
+    classDef success fill:#c8e6c9,stroke:#2e7d32,color:#1b5e20
+    classDef exit fill:#b3e5fc,stroke:#0277bd,color:#01579b
+```
+
+### `findStatementEnd` — descend then climb
+
+The heart of the "extend" path. Two passes over the tree, in opposite
+directions, each doing a different job:
+
+```mermaid
+flowchart LR
+    Root["rootNode of the\nparsed window"]:::entry --> Descend
+
+    subgraph Descend["1. Descend: find WHERE the cursor is"]
+        D1["Walk down, keep every node\nthat contains the cursor"]:::process
+        D2["Smallest span so far\n= current best"]:::process
+        D1 --> D2
+    end
+
+    Descend --> Best["bestNode\n(the innermost node\nunder the cursor)"]:::success
+
+    Best --> Climb
+
+    subgraph Climb["2. Climb: find the NEAREST enclosing statement"]
+        C1{"Is bestNode already\na statement boundary?"}:::decision
+        C2["Walk .parent upward,\nstop at first\nstatement-boundary type"]:::process
+        C1 -- Yes --> Skip["skip climbing —\nalready there"]:::note
+        C1 -- No --> C2
+    end
+
+    Skip --> Result
+    C2 --> Result["currentNode.endPosition\n= the statement's end"]:::exit
+
+    classDef entry fill:#bbdefb,stroke:#1565c0,color:#0d47a1
+    classDef process fill:#ffe082,stroke:#ff8f00,color:#e65100
+    classDef decision fill:#d1c4e9,stroke:#5e35b1,color:#311b92
+    classDef success fill:#c8e6c9,stroke:#2e7d32,color:#1b5e20
+    classDef note fill:#eceff1,stroke:#455a64,color:#263238
+    classDef exit fill:#b3e5fc,stroke:#0277bd,color:#01579b
+```
+
+### Notes
+
+- **Why descend then climb, not just climb from the top**: descending first
+  finds the exact leaf the cursor is inside of, with no ambiguity. Climbing
+  from there checks ancestors nearest-first, so the *first* statement-boundary
+  type hit is guaranteed to be the **innermost** enclosing statement — e.g. the
+  nested `if` the cursor is actually in, not an outer `if` that happens to
+  wrap it too.
+- **`SelfCheck` before climbing** (`if (!STATEMENT_BOUNDARY_TYPES.has(currentNode.type))`
+  in [ast-analysis.ts](../src/services/ast/ast-analysis.ts)) fixes a real bug:
+  without it, a cursor landing exactly on a statement's first token (e.g. right
+  before `if`) made `bestNode` itself already a boundary type, but the old code
+  still climbed past it looking at parents — running out of statement-typed
+  ancestors and falling back to the whole parsed window's end, which could
+  swallow unrelated sibling statements after the real one.
+- **Small parse window, not the whole file**: at most `REGION_LINE_LIMIT` (3)
+  lines are parsed, starting at the cursor's line — cheap enough to run on
+  every keystroke, at the cost of only working when the statement's real end
+  is nearby.
+- **`shouldTryExtension`'s three checks** exist purely as a cheap early-out —
+  no point parsing anything if the current line already looks like a complete,
+  terminated statement.
+- **Fallback is always safe**: if extension is skipped, fails, or the result
+  would exceed `REGION_CHARACTER_LIMIT`, the region silently stays "replace to
+  end of current line" — the same behavior as if there were no AST-awareness
+  at all.

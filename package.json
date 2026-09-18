@@ -64,13 +64,7 @@
           "description": "Max entries to store in completion cache"
         }
       }
-    },
-    "commands": [
-      {
-        "command": "tab-completion.helloWorld",
-        "title": "Hello World"
-      }
-    ]
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
