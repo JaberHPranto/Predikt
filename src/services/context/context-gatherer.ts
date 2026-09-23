@@ -6,6 +6,7 @@ import { LSPService } from "../lsp-service";
 import { ASTService } from "../ast/ast-service";
 import { ReplacementRegionStage } from "./stages/replacement-region-stage";
 import { SuffixStage } from "./stages/suffix-stage";
+import { CrossFileService } from "../cross-file/cross-file-service";
 
 export class ContextGatherer implements vscode.Disposable {
   private readonly intentTracker: IntentTracker;
@@ -13,6 +14,7 @@ export class ContextGatherer implements vscode.Disposable {
   private readonly lspService: LSPService;
   private readonly replacementRegionStage: ReplacementRegionStage;
   private readonly suffixStage: SuffixStage;
+  private readonly crossFileService: CrossFileService;
 
   constructor(astService: ASTService, intentTracker: IntentTracker) {
     this.intentTracker = intentTracker;
@@ -20,6 +22,7 @@ export class ContextGatherer implements vscode.Disposable {
     this.prefixStage = new PrefixStage(this.lspService);
     this.suffixStage = new SuffixStage();
     this.replacementRegionStage = new ReplacementRegionStage(astService);
+    this.crossFileService = new CrossFileService(this.lspService, astService);
   }
 
   async gatherContext(
@@ -38,9 +41,12 @@ export class ContextGatherer implements vscode.Disposable {
 
     const suffix = this.suffixStage.buildSuffixAfterRegion(document, position);
 
+    const crossFileSymbols =
+      (await this.crossFileService.getRelevantSymbols(document, prefix)) ?? "";
+
     const editHistory = this.intentTracker.serialize();
 
-    return suffix ?? "";
+    return JSON.stringify(crossFileSymbols) ?? "";
   }
 
   dispose() {

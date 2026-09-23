@@ -422,12 +422,13 @@ flowchart TD
 
 Unlike the sections above, this one is implemented today:
 [replacement-region-stage.ts](../src/services/context/replacement-region-stage.ts)
-+ [ast-analysis.ts](../src/services/ast/ast-analysis.ts). It decides how much
-_already-typed_ code after the cursor a completion is allowed to overwrite —
-not just insert in front of — so accepting a suggestion can't leave a
-duplicated or dangling bracket behind from code that was already there.
-`ContextGatherer` calls it ([context-gatherer.ts:26](../src/services/context/context-gatherer.ts#L26))
-but doesn't use the result yet — wired ahead of the feature landing.
+
+- [ast-analysis.ts](../src/services/ast/ast-analysis.ts). It decides how much
+  _already-typed_ code after the cursor a completion is allowed to overwrite —
+  not just insert in front of — so accepting a suggestion can't leave a
+  duplicated or dangling bracket behind from code that was already there.
+  `ContextGatherer` calls it ([context-gatherer.ts:26](../src/services/context/context-gatherer.ts#L26))
+  but doesn't use the result yet — wired ahead of the feature landing.
 
 ```mermaid
 flowchart TD
@@ -515,7 +516,7 @@ flowchart LR
 
 - **Why descend then climb, not just climb from the top**: descending first
   finds the exact leaf the cursor is inside of, with no ambiguity. Climbing
-  from there checks ancestors nearest-first, so the *first* statement-boundary
+  from there checks ancestors nearest-first, so the _first_ statement-boundary
   type hit is guaranteed to be the **innermost** enclosing statement — e.g. the
   nested `if` the cursor is actually in, not an outer `if` that happens to
   wrap it too.
@@ -537,3 +538,81 @@ flowchart LR
   would exceed `REGION_CHARACTER_LIMIT`, the region silently stays "replace to
   end of current line" — the same behavior as if there were no AST-awareness
   at all.
+
+## Cross-File Symbols
+
+[cross-file-service.ts](../src/services/cross-file/cross-file-service.ts) finds
+classes/functions from _other_ files that the user is referencing near the
+cursor, and returns their bodies-stripped signatures for the LLM prompt. Two
+parts: a background **index** (filled on open/save) and a per-request
+**lookup** (`getRelevantSymbols`).
+
+```mermaid
+flowchart TD
+    subgraph Index["Background: DocumentIndex (onDidOpen / onDidSave)"]
+        I1["File opened/saved"]:::entry
+        I2{"Same document.version\nalready indexed?"}:::decision
+        I3["LSP: executeDocumentSymbolProvider\n(same data as Outline view)"]:::process
+        I4["Flatten tree, keep Class / Interface / Enum /\nFunction / Method / Property / Constant / ..."]:::process
+        I5[("cache[uri] =\n{ version, symbols:\nname, kind, range }")]:::success
+        I1 --> I2
+        I2 -- Yes --> Skip["Skip"]:::neutral
+        I2 -- No --> I3 --> I4 --> I5
+    end
+
+    subgraph Lookup["Per request: getRelevantSymbols(document, prefix)"]
+        R1["ReferenceExtractor.extract(prefix)"]:::entry
+        R2["Strip imports, take last 15 lines\n-> nearByIdentifiers (minus keywords)"]:::process
+        R3["tree-sitter on prefix\n-> declaredIdentifiers (this file)"]:::process
+        R4{"referenceNames empty?\n(nearBy - declared, aliases -> original)"}:::decision
+        R5["getAllSymbols() from index"]:::process
+        R6["Filter 1: other files only,\nnot declared here"]:::process
+        R7["Filter 2: name in nearBy,\nnot a Constructor"]:::process
+        R8{"Any candidates?"}:::decision
+        R9["SignatureProvider:\nopen file -> text in range ->\ntree-sitter -> strip bodies\n(cached per uri+kind+name+range)"]:::process
+        Out(["IndexedSymbol[] with signature"]):::exit
+        Empty(["[]"]):::warn
+
+        R1 --> R2 --> R3 --> R4
+        R4 -- Yes --> Empty
+        R4 -- No --> R5 --> R6 --> R7 --> R8
+        R8 -- No --> Empty
+        R8 -- Yes --> R9 --> Out
+    end
+
+    I5 -. read by .-> R5
+
+    classDef entry fill:#bbdefb,stroke:#1565c0,color:#0d47a1
+    classDef decision fill:#d1c4e9,stroke:#5e35b1,color:#311b92
+    classDef process fill:#ffe082,stroke:#ff8f00,color:#e65100
+    classDef success fill:#c8e6c9,stroke:#2e7d32,color:#1b5e20
+    classDef neutral fill:#eceff1,stroke:#455a64,color:#263238
+    classDef warn fill:#ffccbc,stroke:#d84315,color:#bf360c
+    classDef exit fill:#b3e5fc,stroke:#0277bd,color:#01579b
+```
+
+### Example
+
+```js
+// jungle-animal.js (indexed earlier)
+export class JungleAnimal {
+  constructor(name, species, sound) { ... }
+  makeSound() { ... }
+  info() { ... }
+}
+```
+
+```js
+// main.js (typing, cursor at |)
+import { JungleAnimal } from "./jungle-animal";
+
+const dog = new JungleAnimal(|
+```
+
+| Step                                        | Value                                                                                                    |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| nearBy (last 15 lines, no imports/keywords) | `{dog, JungleAnimal}`                                                                                    |
+| declared (tree-sitter on prefix)            | `{}` — unfinished line parses as ERROR, so `dog` isn't seen                                              |
+| referenceNames                              | `{dog, JungleAnimal}`                                                                                    |
+| candidates (other files, name in nearBy)    | `[JungleAnimal]`                                                                                         |
+| signature                                   | `class JungleAnimal`<br>`  constructor(name, species, sound);`<br>`  makeSound();`<br>`  info();`<br>`}` |
