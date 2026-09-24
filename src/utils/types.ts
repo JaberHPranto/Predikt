@@ -82,3 +82,19 @@ export interface IndexedSymbol {
   };
   signature?: string;
 }
+
+export interface CompletionContext {
+  prefix: string;
+  suffixAfterRegion: string;
+  replacementRegion: ReplacementRegion;
+  cursorPosition: vscode.Position;
+  languageId: string;
+  filePath: string;
+  editHistory: string;
+  crossFileSymbols: IndexedSymbol[];
+}
+
+export interface ChatMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}

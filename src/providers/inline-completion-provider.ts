@@ -9,6 +9,7 @@ import { IntentTracker } from "../services/intent-tracker";
 import { CompletionCache } from "../cache/completion-cache";
 import { ContextGatherer } from "../services/context/context-gatherer";
 import { ASTService } from "../services/ast/ast-service";
+import { PromptBuilder } from "../services/prompt-builder";
 
 export class InlineCompletionProvider
   implements vscode.InlineCompletionItemProvider
@@ -18,6 +19,7 @@ export class InlineCompletionProvider
   private readonly intentTracker: IntentTracker;
   private readonly completionCache: CompletionCache;
   private readonly contextGatherer: ContextGatherer;
+  private readonly promptBuilder: PromptBuilder;
 
   // what llm last gave to the user
   private pendingCompletion: PendingCompletion | null = null;
@@ -32,6 +34,7 @@ export class InlineCompletionProvider
     this.llmClient = new LLMClient(outputChannel);
     this.intentTracker = new IntentTracker();
     this.completionCache = new CompletionCache();
+    this.promptBuilder = new PromptBuilder();
     this.contextGatherer = new ContextGatherer(astService, this.intentTracker);
   }
 
@@ -83,23 +86,20 @@ export class InlineCompletionProvider
         return null;
       }
 
-      const prefix = await this.contextGatherer.gatherContext(
+      const completionContext = await this.contextGatherer.gatherContext(
         document,
         position,
       );
 
-      this.log(`Prefix: ${prefix}`);
+      const messages: ChatMessage[] =
+        this.promptBuilder.buildPrompt(completionContext);
 
-      const messages: ChatMessage[] = [
-        {
-          role: "system",
-          content:
-            "You are a code completion engine. Continue the code exactly at the cursor. Output only the raw continuation: no markdown fences, no repetition of existing code, no explanation.",
-        },
-        { role: "user", content: prefix },
-      ];
+      this.log(
+        `prompt (${messages.length} messages): ${JSON.stringify(messages)}`,
+      );
 
       let completion = "";
+
       try {
         const generator = await this.llmClient.complete(messages);
 
@@ -119,13 +119,12 @@ export class InlineCompletionProvider
         return null;
       }
 
-      // Remove markdown fences
-      completion = completion
-        .replace(/^```[a-z]*\n?/, "")
-        .replace(/```\s*$/, "");
+      completion = this.cleanCompletionText(completion);
+
       this.log(
         `completion (${completion.length} chars): ${JSON.stringify(completion.slice(0, 120))}`,
       );
+
       if (!completion.trim()) {
         return null;
       }
@@ -285,10 +284,6 @@ export class InlineCompletionProvider
     return undefined;
   }
 
-  private log(message: string): void {
-    this.outputChannel.appendLine(`[InlineCompletionProvider] ${message}`);
-  }
-
   private createInlineCompletionList(
     text: string,
     range?: vscode.Range,
@@ -300,5 +295,16 @@ export class InlineCompletionProvider
 
   private handleClearCompletion(): void {
     this.pendingCompletion = null;
+  }
+
+  private log(message: string): void {
+    this.outputChannel.appendLine(`[InlineCompletionProvider] ${message}`);
+  }
+
+  private cleanCompletionText(text: string): string {
+    let cleaned = text.replace(/^```\w*\n?/, "").replace(/\n?```$/, "");
+    const explanationPattern = /\n\n(?:\/\/|\/\*|#|Note:|Explanation:)[\s\S]*$/;
+    cleaned = cleaned.replace(explanationPattern, "");
+    return cleaned.trimEnd();
   }
 }

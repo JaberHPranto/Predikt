@@ -80,4 +80,8 @@ export class SignatureProvider {
       return undefined;
     }
   }
+
+  clear() {
+    this.signatureCache.clear();
+  }
 }

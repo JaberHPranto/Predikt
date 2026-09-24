@@ -7,6 +7,7 @@ import { ASTService } from "../ast/ast-service";
 import { ReplacementRegionStage } from "./stages/replacement-region-stage";
 import { SuffixStage } from "./stages/suffix-stage";
 import { CrossFileService } from "../cross-file/cross-file-service";
+import { CompletionContext } from "../../utils/types";
 
 export class ContextGatherer implements vscode.Disposable {
   private readonly intentTracker: IntentTracker;
@@ -28,7 +29,7 @@ export class ContextGatherer implements vscode.Disposable {
   async gatherContext(
     document: vscode.TextDocument,
     position: vscode.Position,
-  ): Promise<string> {
+  ): Promise<CompletionContext> {
     const replacementRegion = this.replacementRegionStage.compute(
       document,
       position,
@@ -46,7 +47,16 @@ export class ContextGatherer implements vscode.Disposable {
 
     const editHistory = this.intentTracker.serialize();
 
-    return JSON.stringify(crossFileSymbols) ?? "";
+    return {
+      prefix,
+      suffixAfterRegion: suffix,
+      replacementRegion,
+      cursorPosition: position,
+      languageId: document.languageId,
+      filePath: vscode.workspace.asRelativePath(document.uri),
+      editHistory,
+      crossFileSymbols,
+    };
   }
 
   dispose() {
